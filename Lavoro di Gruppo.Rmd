@@ -1,0 +1,217 @@
+---
+title: "Parkinson Diseases"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Apriamo i dati
+
+```{r}
+rm(list = ls())
+dati <- read.csv("~/Desktop/SMHDD/pd_speech_features.csv",header = T,skip = 1)
+source("~/Documents/UNI/MAGISTRALE/DATA MINING/Script DM/Pulizia e Altro/Altro/lift-roc-tab.R")
+
+```
+
+Skippiamo la prima riga che è quella che contiene le macro categorie, adesso le recuperiamo:
+
+```{r}
+dati1 <- read.csv("~/Desktop/SMHDD/pd_speech_features.csv",header = F)
+dati1 <- dati1[1,]
+rm(dati1)
+```
+
+Le macro categorie delle variabili sono divise come:
+
+```{r,include=FALSE}
+dt <- cbind(c("3-23","24-26","27-30","31-34","35-56","57-140","141-322","323-755"),c("Baseline Feature","Intensity Parameters","Formant Frequencies","Bandwidth Parameters","Vocal Fold","MFCC","Wavelet Features","TQWT Features"))
+colnames(dt) <- c("Colonne","Descrizione")
+
+#install.packages("kableExtra")
+# install.packages("xcolor")
+# library(xcolor)
+library(knitr)
+library(kableExtra)
+
+```
+```{r,echo=F}
+kable(dt, "latex", booktabs = T) %>% kable_styling(position = "center")
+```
+
+
+I gruppi sulle variabili non sono stati fatti tenendo conto dell'id che chiaramente andrà tolto prima di cominciare l'analisi, e di conseguenza i gruppi dovranno scalare di un numero.
+La variabile enll'attuale posizione 2 è il genere.
+In ogni caso i nomi delle variabili sono già assegnati ai colnames.
+
+```{r}
+head(colnames(dati))
+```
+
+Cominciamo rimuovendo l'id, non abbiamo dati mancanti quinid non abbiamo problemi di imputaizione etc.
+Sistemiamo inoltre l'ordine e rinomianiamo la risposta, per comodità
+```{r}
+id <- dati[,1]
+dati <- dati[,-1]
+dati <- cbind(dati[grep("class",colnames(dati))],dati[-grep("class",colnames(dati))])
+colnames(dati)[1] <- "y"
+
+```
+Mantengo comunque l'id non si sa mai ci venga voglia di fare un modello gerarchico.
+Ho riinominato la risposta come "y" e l'ho spostata all'inizio, per due motivi:
+1) Per me è più comodo
+2) Le colonne delle macrocategorie rimangono invariate.
+
+Indaghiamo la risposta per capire se ci troviamo in siutazione scomode, come classi sbilanciate:
+
+```{r}
+
+dati$y <- as.factor(dati$y)
+dati$gender <- as.factor(dati$gender)
+prop.table(table(dati$y))
+
+```
+Sono sblianciate, ma non troppo quindi si cercheremo di risolvere questo problema ma non dovrebbe essere un casino farlo.
+
+Procediamo diviendendo in Stima-Verifica il dataset e costruendo la Model.matrix per poi girare qualche modellino:
+
+```{r}
+set.seed(69)
+acaso <<- sample(1:nrow(dati), 0.75*nrow(dati))
+sss <<- dati[acaso,]; vvv <<- dati[-acaso,]
+
+```
+
+Definisco la posizione della risposta, così in futuro non sbaglio, e vediamo quanto sbilanciata è la risposta nel insieme di Verifica.
+```{r}
+risposta <- 1
+table(sss$y)/length(sss$y)
+```
+Come ci potevamo aspettare la proporzione (per fortuna) è coerente con il dataset, quindi possiamo porcedere a risolvere il problema dello sblianciamento dei dati definendo un cutoff.
+Lo sbilanciamento della variabile risposta non è un problema a livello computazionale: i modelli possono essere stimati in qualunque caso. E' invece un problema a livello teorico/concettuale, che si manifesta in fase di analisi della qualità del modello: un classificatore che viene costruito su una variabile risposta con modalità sbilanciate rischia di assegnare troppo peso ad una delle modalità. 
+La soluzione che proponiamo consiste nel selezionare un soglia corretta che separi la frontiera di classificazione: questa soglia verrà scelta (circa) pari alla minor frequenza della modalità della variabile risposta.
+Procedendo con questo metodo si decide di assegnare un costo maggiore all’errata classificazione dell’**evento raro** piuttosto che quella dell’**evento più frequente**.
+La soglia quindi la definiamo come:
+
+```{r}
+cutoff <- 0.2557319
+```
+
+Un altra alternativa sarebbe quella di bilanciare il dataset ma perderemmo il 75% dei dati.
+
+A questo punto facciamo un paio di aggiustamenti, ovvero ci salviamo la risposta dell'insieme di stima e dell'insisme di verifica in forma numerica, ci serviranno dopo.
+Poi definiamo l'oggetto formula che ci servirà per costruire le Model.matrix e per girare i modelli, una con la risposta quantitativa e una con la risposta come fattore:
+
+```{r}
+y_num <- as.numeric(sss$y)-1
+#table(y_num)  # risposta quantitativa sull'insieme di stima 
+g <- as.numeric(vvv$y)-1
+#table(g)      # risposta quantitativa sull'insieme di verifica
+
+f1 <- as.formula(paste("y ~ ", paste(names(sss)[-c(risposta)], collapse = "+"), collapse = ""))
+#f1 # risposta qualitativa
+
+f2 <- as.formula(paste("y_num ~ ", paste(names(sss)[-c(risposta)], collapse = "+"), collapse = ""))
+#f2 # risposta quantitativa
+
+```
+
+A questo punto non ci resta che trovarci la model.matrix nell'insieme di stima e verifica, normalizziamo le variabili perchè è meglio farlo.
+
+```{r}
+X.sss <- model.matrix(~., data = sss[,-risposta])[, -1] # SENZA INTERCETTA
+X.vvv <- model.matrix(~., data = vvv[,-risposta])[, -1] # SENZA INTERCETTA
+
+# standardizziamo le variabili quantitative, non sex e la risposta chiaramente
+std.sss <- sss
+for(i in 3:nrow(sss)){ std.sss[, i] <- scale(std.sss[, i])}
+Xstd.sss <- model.matrix(~., data = std.sss[,-risposta])[, -1] # SENZA INTERCETTA
+std.vvv <- vvv
+for(i in 3:nrow(sss)){ std.vvv[, i] <- scale(std.vvv[, i])}
+Xstd.vvv <- model.matrix(~., data = std.vvv[,-risposta])[, -1] # SENZA INTERCETTA
+rm(std.sss, std.vvv)
+```
+
+A questo punto ci siamo creati le model.matrix dell'insieme di stima e di verifica sia standardizzata che non.
+
+Definiamo una funzione che ci permetta poi di valutare l'accuratezza dei nostri modelli:
+
+```{r}
+
+tabella.sommario.meglio <- function(previsti,reali,cutoff=NA){
+  risultati <- list()
+  if(!is.na(cutoff)){
+    previsti <- previsti>cutoff
+  }
+  tab <- table(previsti,reali)
+  accuracy <- sum(diag(tab))/sum(tab)
+  errore <- 1-accuracy
+  cat('Matrice di confusione\n')
+  print(tab)
+  cat('Accuratezza: ',accuracy,'\n')
+  cat('Errore: ',errore,'\n')
+  if(ncol(tab)==2){
+    precision <- tab[2,2]/sum(tab[,2])
+    recall <- tab[2,2]/sum(tab[2,])
+    f1 <- 2*precision*recall/(precision+recall)
+    
+    cat('Precisione: ',precision,'\n')
+    cat('Richiamo: ',recall,'\n')
+    cat('F1: ',f1,'\n')
+  }
+  risultati <- list(matrice.confusione=tab,accuratezza=accuracy,errore=errore)
+  if(ncol(tab)==2){
+    risultati$precisione <- precision
+    risultati$richiamo <- recall
+    risultati$F1 <- f1
+  }
+  return(risultati)
+}
+```
+
+Cominciamo quindi a fare qualche modellino, il primo che possiamo fare è il lasso logistico:
+
+```{r}
+
+library(glmnet)
+fit <- glmnet(X.sss, sss$y, family = "binomial",standardize = T)
+plot(fit, xvar="lambda", label=TRUE)
+
+cfit <- cv.glmnet(X.sss, sss$y,standardize=T,family="binomial")
+plot(cfit)
+p.fit <- predict(cfit, newx=X.vvv,s="lambda.min",type="response")
+lr.lasso.logistico  <- lift.roc(p.fit, g, type = "crude", plot.it = FALSE)
+
+
+tabella.sommario.meglio(p.fit,vvv$y,cutoff)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# memorandum per come si usa lift_roc papapa
+```{r}
+#a <- rbind(lr.lasso.logistico,lr.lasso.logistico)
+#confronto_lift_roc(a,type=1)
+```
+
